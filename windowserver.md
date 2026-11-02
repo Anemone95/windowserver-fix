@@ -141,35 +141,36 @@ id 偏移的佐证：其余 shield 创建者读 id 都用 `ldr w8, [win]`，再�
 
 工具：`~/Work/windowserver-fix/`
 
-- `shield_fix.py`：lldb 命令 `shieldfix check|apply`。核对 SkyLight UUID
-  `6F1978A2-1B8A-3A44-903D-532EED7106EB`，按运行时 slide 定位，校验 `0x186f94b28..0x186f94b58`
-  共 13 条指令逐字一致后才写入，写后回读确认。
-- `ws-shield-fix.sh`：root 运行；lldb attach WindowServer → `shieldfix` → detach。
-  debugger attach 使 WindowServer 获得 CS_DEBUGGED，修改后的代码页可正常执行。
+- `shield_patch.rs`：直接通过 Mach API 读取 WindowServer 内存。核对 SkyLight UUID
+  `6F1978A2-1B8A-3A44-903D-532EED7106EB`，按运行时 shared cache slide 定位，校验 `0x186f94b28..0x186f94b58`
+  共 13 条指令后写入，写后刷新指令缓存并回读确认。
+- `ws-shield-watch.rs`：提供 `watch`、`check`、`apply` 入口。应用时用 `ptrace(PT_ATTACH)`
+  使目标获得 CS_DEBUGGED 并暂停进程；写入私有代码页后恢复 RX 权限，detach 恢复运行。
+  `check` 读取和校验内存，已是 `PATCHED` 时 `apply` 直接返回。
 
-运行（WindowServer 冻结约十余秒后恢复）：
+手动运行：
 
 ```
-sudo ~/Work/windowserver-fix/ws-shield-fix.sh          # apply
-sudo ~/Work/windowserver-fix/ws-shield-fix.sh check    # 只报告 ORIGINAL / PATCHED
+sudo ~/Work/windowserver-fix/ws-shield-watch apply
+sudo ~/Work/windowserver-fix/ws-shield-watch check    # 报告 ORIGINAL / PARTIAL / PATCHED
 ```
 
 补丁驻留在 WindowServer 内存中，由 LaunchDaemon 在每个新 WindowServer（开机、注销后）上自动应用：
 
 - `com.wenyuan.ws-shield-fix`（`/Library/LaunchDaemons/`，RunAtLoad + KeepAlive）常驻运行
   `/usr/local/libexec/ws-shield-fix/ws-shield-watch`（root 所有的副本）。它由 `ws-shield-watch.rs` 编译而来：
-  单文件 Rust，无外部 crate，kqueue 直接 FFI；构建命令 `rustc -O --edition 2021 -o ws-shield-watch ws-shield-watch.rs`。
+  Rust 无外部 crate，kqueue 和 Mach API 直接 FFI；构建与签名命令 `./build.sh`。
 - 事件驱动：用 kqueue `EVFILT_PROC` / `NOTE_EXIT` 阻塞等待当前 WindowServer 退出（0 CPU、无定时唤醒）；
-  退出后每秒查找新 WindowServer，新实例运行满 20 s 后调用 `ws-shield-fix.sh apply`。
-- 每个 pid 只打一次：pid 记入 `/var/run/ws-shield-fix.pids`（开机清空），每次开机最多处理 5 个实例。
+  退出后每秒查找新 WindowServer，新实例运行满 20 s 后调用 Rust 内部补丁函数。
+- 每个 pid 尝试一次：写入 `/var/run/ws-shield-fix.pids`（开机清空），每次开机最多尝试 5 个实例。
 - 开机时补丁发生在登录界面阶段；日志 `/var/log/ws-shield-fix.log`。
-- 安装：`sudo ~/Work/windowserver-fix/install-daemon.sh`；卸载命令写在该脚本头部。
-- 2026-11-02 实测：
+- 安装：先 `./build.sh`，再 `sudo ./install-daemon.sh`；完整安装、验证和卸载见 [README.md](README.md)。
+- 2026-11-02 原 LLDB 实现的实测：
   - launchd 以 root 运行 patch 路径：attach pid 34611，报告 `PATCHED`，正常 detach，耗时 8 s。
   - 替身进程测试：退出即刻察觉，新 pid 满等待时间后被 patch；watcher 重启后不重复 patch。
   - 常驻 Rust watcher（pid 3270）：状态 `Ss`，CPU 0.0%，RSS 1.7 MB，累计 CPU 0.01 s，监听 WindowServer 34611。
 
-实测：
+原 LLDB 实现的补丁效果实测：
 
 - 应用：pid 34611，slide `0x8d88000`，站点 `0x18fd1cb4c`，两处回读 ok，WindowServer 保持运行（同 pid）。
 - 打补丁前：一次 `pmset displaysleepnow` 唤醒，`Packages Display N Shield` 12 → 15（+3）。
@@ -177,7 +178,11 @@ sudo ~/Work/windowserver-fix/ws-shield-fix.sh check    # 只报告 ORIGINAL / PA
   （`PKGReconcileAutomaticAppearanceTheme` 20:21:31.404 → `complete_appearance_transition_on_session` 20:21:31.508）。
 - 已泄漏的 15 个窗口保持到下次 WindowServer 重启时回收。
 
-源码级修复走 §7 的 Apple 路径；系统升级后 SkyLight UUID 变化，`shieldfix` 会拒绝写入，用 §6 复测确认。
+2026-11-02 Rust 原生实现的验证：独立子进程中修改可执行指令并执行，恢复 RX 权限；
+加载真实 SkyLight 的子进程中修改同一补丁位置，父进程保持原始指令，验证代码页为进程私有。
+该 shared cache 子进程的一次暂停约 11.4 ms。真实 WindowServer 上的新实现耗时待 root 验证。
+
+源码级修复走 §7 的 Apple 路径；系统升级后 build/UUID 校验按支持的版本匹配，用 §6 复测确认。
 
 ## 6. 验证方法
 

@@ -5,11 +5,12 @@
 	<key>Label</key>
 	<string>com.wenyuan.ws-shield-fix</string>
 	<!-- Live-patches SkyLight show_shield_windows in each new WindowServer
-	     (shield-window leak, see ~/Work/windowserver.md §5.1).
+	     (shield-window leak, see windowserver.md §5.1).
 	     Blocks on kqueue NOTE_EXIT for the running WindowServer between patches. -->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/libexec/ws-shield-fix/ws-shield-watch</string>
+		<string>watch</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
